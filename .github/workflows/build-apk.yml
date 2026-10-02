@@ -29,10 +29,16 @@ jobs:
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
+      - name: Configurar local.properties com Android SDK
+        working-directory: ./android_app
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          cat local.properties
+
       - name: Compilar APK (assembleDebug)
         working-directory: ./android_app
         run: |
-          gradle assembleDebug --stacktrace
+          gradle assembleDebug --stacktrace --info
 
       - name: Renomear APK para ZeroMeta.apk
         run: |
