@@ -20,18 +20,19 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Configurar Gradle Oficial
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.2'
 
-      - name: Instalar Gradle Wrapper
-        working-directory: ./android_app
+      - name: Aceitar Licenças do Android SDK
         run: |
-          gradle wrapper
-          chmod +x gradlew
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Compilar APK (assembleDebug)
         working-directory: ./android_app
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          gradle assembleDebug --stacktrace
 
       - name: Renomear APK para ZeroMeta.apk
         run: |
@@ -43,18 +44,3 @@ jobs:
           name: ZeroMeta-Android-APK
           path: ZeroMeta-Android.apk
           retention-days: 30
-
-      - name: Criar Release com Link Direto do APK
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        with:
-          files: ZeroMeta-Android.apk
-          tag_name: v1.0.0
-          name: ZeroMeta AI - Aplicativo Android Nativo (.apk)
-          body: |
-            ## 📱 ZeroMeta AI para Android (.APK Nativo)
-            - **Sobrescreve fotos diretamente na pasta Pictures/ e DCIM/ sem duplicar na galeria!**
-            - Remove C2PA da OpenAI, ChatGPT, Midjourney, Adobe Firefly, EXIF, GPS e Prompts.
-            - Instalação direta no celular sem Google Play Store.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
