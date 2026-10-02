@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configurar Java JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -27,18 +27,20 @@ jobs:
 
       - name: Aceitar Licenças do Android SDK
         run: |
+          mkdir -p "$ANDROID_HOME/licenses"
+          echo -e "\n24333f8a63b6125ea591d2d77a4f49ca7cba4429" > "$ANDROID_HOME/licenses/android-sdk-license"
+          echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Configurar local.properties com Android SDK
         working-directory: ./android_app
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          cat local.properties
 
       - name: Compilar APK (assembleDebug)
         working-directory: ./android_app
         run: |
-          gradle assembleDebug --stacktrace --info
+          gradle assembleDebug --stacktrace --no-daemon
 
       - name: Renomear APK para ZeroMeta.apk
         run: |
