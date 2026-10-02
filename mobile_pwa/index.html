@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="pt-BR" style="background-color: #090d16;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ZeroMeta AI • Removedor de Metadados</title>
+  
+  <!-- PWA & Mobile Meta Tags -->
+  <meta name="theme-color" content="#0284c7">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ZeroMeta">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+
+  <link rel="stylesheet" href="style.css">
+  <script src="libs/jszip.min.js"></script>
+</head>
+<body style="background-color: #090d16; color: #f8fafc; margin: 0; min-height: 100vh;">
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-shield">🛡️</div>
+      <div class="header-info">
+        <h1>ZeroMeta AI <span class="tag-pwa">Android</span></h1>
+        <p>Remove C2PA de IA, EXIF, GPS e Prompts 100% no seu celular.</p>
+      </div>
+    </header>
+
+    <!-- Install App Banner (Always visible until installed) -->
+    <div id="install-banner" class="install-banner">
+      <div>
+        <strong>📱 Instalar Aplicativo</strong>
+        <p style="font-size: 0.75rem; color: var(--text-muted);">Use offline direto da sua tela inicial</p>
+      </div>
+      <button id="btn-install" class="btn-install">Instalar</button>
+    </div>
+
+    <!-- Upload / Photo Selection Area -->
+    <div id="drop-zone" class="upload-card">
+      <div class="upload-icon">📸</div>
+      <h3>Toque para Selecionar Fotos</h3>
+      <p>Escolha uma ou várias fotos da galeria do seu celular</p>
+      <input type="file" id="file-input" multiple accept="image/*" style="display: none;">
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div id="stat-total" class="stat-val">0</div>
+        <div class="stat-lbl">Fotos</div>
+      </div>
+      <div class="stat-box">
+        <div id="stat-c2pa" class="stat-val highlight">0</div>
+        <div class="stat-lbl">Rastros C2PA/IA</div>
+      </div>
+      <div class="stat-box">
+        <div id="stat-saved" class="stat-val">0 KB</div>
+        <div class="stat-lbl">Espaço Salvo</div>
+      </div>
+    </div>
+
+    <!-- Progress Indicator (Hidden while idle) -->
+    <div id="progress-card" class="progress-card" style="display: none;">
+      <div class="progress-track">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div id="progress-text" class="progress-text">Processando fotos...</div>
+    </div>
+
+    <!-- Naming Options (Replace vs Prefix) -->
+    <div class="naming-options" style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 16px; font-size: 0.85rem;">
+      <div style="font-weight: 600; margin-bottom: 8px; color: #fff;">💾 Como Salvar as Fotos Limpas:</div>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer;">
+        <input type="radio" name="naming-mode" value="exact" checked style="accent-color: var(--accent-cyan);">
+        <span><strong>Substituir (mesmo nome original)</strong> — evita duplicatas</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="radio" name="naming-mode" value="prefix" style="accent-color: var(--accent-cyan);">
+        <span><strong>Adicionar prefixo [LIMPA]</strong> — para saber qual é qual</span>
+      </label>
+      <p style="font-size: 0.73rem; color: var(--text-muted); margin-top: 8px; line-height: 1.4;">
+        💡 <em>Ao salvar com o mesmo nome, se o celular perguntar <strong>"Substituir arquivo existente?"</strong>, toque em <strong>Substituir</strong> para não acumular fotos repetidas!</em>
+      </p>
+    </div>
+
+    <!-- Actions Bar -->
+    <div class="actions-bar">
+      <button id="btn-clean-all" class="btn-primary" disabled>
+        <span>⚡</span> Limpar Fotos Selecionadas
+      </button>
+    </div>
+
+    <!-- Post-Cleaning Action Panel (Appears after cleaning) -->
+    <div id="post-clean-panel" class="post-clean-panel" style="display: none;">
+      <div class="post-clean-title">
+        <span>🎉</span> Fotos Limpas com Sucesso!
+      </div>
+      <div class="post-clean-buttons">
+        <button id="btn-save-all" class="btn-batch-primary">
+          <span>💾</span> Salvar Todas as Fotos
+        </button>
+        <button id="btn-share-all" class="btn-batch-share">
+          <span>📤</span> Enviar / Compartilhar Todas
+        </button>
+        <button id="btn-download-all" class="btn-batch-zip">
+          <span>📦</span> Baixar em ZIP (Arquivo Compactado Único)
+        </button>
+      </div>
+    </div>
+
+    <!-- List of Selected / Processed Images -->
+    <div id="image-list" class="image-list">
+      <!-- Dynamic cards rendered here -->
+    </div>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detail-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title" style="font-size: 1rem; font-weight: bold;">Detalhes dos Metadados</h3>
+        <button id="btn-close-modal" class="btn-close">&times;</button>
+      </div>
+      <div id="modal-body" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-muted);">
+        <!-- Metadata details inserted here -->
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

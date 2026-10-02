@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+env/
+_fotos_limpas/
+
+# Binaries & Large files
+cloudflared.exe
+desktop.ini
+/*.jpeg
+/*.jpg
+/*.png
+
+# Android & Gradle
+.gradle/
+build/
+android_app/.gradle/
+android_app/build/
+android_app/app/build/
+android_app/local.properties
+*.apk
+*.aab
+
+# OS
+.DS_Store
+Thumbs.db
