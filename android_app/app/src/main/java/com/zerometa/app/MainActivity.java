@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -13,6 +14,7 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.view.View;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -27,8 +29,11 @@ import java.io.InputStream;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_PICK_PHOTOS = 1001;
+    private static final int REQUEST_FILE_CHOOSER = 1002;
+
     private WebView webView;
     private NativeBridge bridge;
+    private ValueCallback<Uri[]> mFilePathCallback;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -50,7 +55,17 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(bridge, "AndroidBridge");
 
         webView.setWebViewClient(new WebViewClient());
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (mFilePathCallback != null) {
+                    mFilePathCallback.onReceiveValue(null);
+                }
+                mFilePathCallback = filePathCallback;
+                launchPhotoPickerIntent(REQUEST_FILE_CHOOSER);
+                return true;
+            }
+        });
 
         // Dark background
         webView.setBackgroundColor(0xFF090D16);
@@ -62,36 +77,97 @@ public class MainActivity extends Activity {
     }
 
     public void openNativePhotoPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
-        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(intent, REQUEST_PICK_PHOTOS);
+        launchPhotoPickerIntent(REQUEST_PICK_PHOTOS);
+    }
+
+    private void launchPhotoPickerIntent(int requestCode) {
+        // 1. Android 13+ (API 33+) Photo Picker Oficial (interface visual moderna de fotos com abas de albuns e selecao multipla)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                Intent intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                intent.setType("image/*");
+                int maxLimit = 100;
+                try {
+                    maxLimit = MediaStore.getPickImagesMaxLimit();
+                } catch (Throwable ignored) {}
+                intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, maxLimit);
+                startActivityForResult(intent, requestCode);
+                return;
+            } catch (Exception ignored) {}
+        }
+
+        // 2. Galeria Nativa do Aparelho (Samsung Galeria, Google Fotos, Xiaomi Galeria, etc.)
+        try {
+            Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+            intent.setType("image/*");
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            intent.putExtra("multi-pick", true);
+            startActivityForResult(intent, requestCode);
+            return;
+        } catch (Exception ignored) {}
+
+        // 3. Fallback com Chooser direcionado para imagens
+        try {
+            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.setType("image/*");
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            startActivityForResult(Intent.createChooser(intent, "Selecionar Fotos"), requestCode);
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (requestCode == REQUEST_FILE_CHOOSER && mFilePathCallback != null) {
+                mFilePathCallback.onReceiveValue(null);
+                mFilePathCallback = null;
+            }
+        }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQUEST_PICK_PHOTOS && resultCode == RESULT_OK && data != null) {
-            JSONArray items = new JSONArray();
+        // Retorno do seletor de fotos invocado pela interface nativa
+        if (requestCode == REQUEST_PICK_PHOTOS) {
+            if (resultCode == RESULT_OK && data != null) {
+                JSONArray items = new JSONArray();
 
-            if (data.getClipData() != null) {
-                ClipData clipData = data.getClipData();
-                for (int i = 0; i < clipData.getItemCount(); i++) {
-                    Uri uri = clipData.getItemAt(i).getUri();
+                if (data.getClipData() != null) {
+                    ClipData clipData = data.getClipData();
+                    for (int i = 0; i < clipData.getItemCount(); i++) {
+                        Uri uri = clipData.getItemAt(i).getUri();
+                        JSONObject obj = resolveUriDetails(uri);
+                        if (obj != null) items.put(obj);
+                    }
+                } else if (data.getData() != null) {
+                    Uri uri = data.getData();
                     JSONObject obj = resolveUriDetails(uri);
                     if (obj != null) items.put(obj);
                 }
-            } else if (data.getData() != null) {
-                Uri uri = data.getData();
-                JSONObject obj = resolveUriDetails(uri);
-                if (obj != null) items.put(obj);
-            }
 
-            if (items.length() > 0) {
-                String js = "window.onNativePhotosPicked(" + items.toString() + ");";
-                webView.post(() -> webView.evaluateJavascript(js, null));
+                if (items.length() > 0) {
+                    String js = "window.onNativePhotosPicked(" + items.toString() + ");";
+                    webView.post(() -> webView.evaluateJavascript(js, null));
+                }
+            }
+            return;
+        }
+
+        // Retorno do seletor invocado via WebView FileChooser
+        if (requestCode == REQUEST_FILE_CHOOSER) {
+            if (mFilePathCallback != null) {
+                Uri[] results = null;
+                if (resultCode == RESULT_OK && data != null) {
+                    if (data.getClipData() != null) {
+                        int count = data.getClipData().getItemCount();
+                        results = new Uri[count];
+                        for (int i = 0; i < count; i++) {
+                            results[i] = data.getClipData().getItemAt(i).getUri();
+                        }
+                    } else if (data.getData() != null) {
+                        results = new Uri[]{data.getData()};
+                    }
+                }
+                mFilePathCallback.onReceiveValue(results);
+                mFilePathCallback = null;
             }
         }
     }
@@ -106,7 +182,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
 
             JSONObject obj = new JSONObject();
-            String name = "foto.png";
+            String name = "foto.jpg";
             long size = 0;
 
             Cursor cursor = getContentResolver().query(uri, null, null, null, null);
@@ -114,10 +190,32 @@ public class MainActivity extends Activity {
                 int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
                 int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
                 if (cursor.moveToFirst()) {
-                    if (nameIndex != -1) name = cursor.getString(nameIndex);
+                    if (nameIndex != -1) {
+                        String fetchedName = cursor.getString(nameIndex);
+                        if (fetchedName != null && !fetchedName.trim().isEmpty()) {
+                            name = fetchedName;
+                        }
+                    }
                     if (sizeIndex != -1) size = cursor.getLong(sizeIndex);
                 }
                 cursor.close();
+            }
+
+            if (size <= 0) {
+                try {
+                    AssetFileDescriptor pfd = getContentResolver().openAssetFileDescriptor(uri, "r");
+                    if (pfd != null) {
+                        size = pfd.getLength();
+                        pfd.close();
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            if (!name.contains(".")) {
+                String mime = getContentResolver().getType(uri);
+                if (mime != null && mime.contains("png")) name += ".png";
+                else if (mime != null && mime.contains("webp")) name += ".webp";
+                else name += ".jpg";
             }
 
             String realPath = getRealPathFromUri(uri, name);
@@ -140,8 +238,8 @@ public class MainActivity extends Activity {
             String[] proj = {MediaStore.Images.Media.DATA};
             Cursor cursor = getContentResolver().query(uri, proj, null, null, null);
             if (cursor != null) {
-                int colIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA);
-                if (cursor.moveToFirst()) {
+                int colIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
+                if (colIndex != -1 && cursor.moveToFirst()) {
                     String path = cursor.getString(colIndex);
                     cursor.close();
                     if (path != null && new File(path).exists()) {
