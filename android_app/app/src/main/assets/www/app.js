@@ -629,14 +629,28 @@ async function blobToBase64(blob) {
 
 async function saveOrOverwriteItem(item, index) {
   const mode = document.querySelector('input[name="naming-mode"]:checked')?.value || 'exact';
-  const cleanName = getCleanFileName(item.fileName);
+  const ext = (item.fileName || '').split('.').pop().toLowerCase();
+  const isJpg = ['jpg', 'jpeg', 'jfif'].includes(ext) || (item.cleanBlob && item.cleanBlob.type === 'image/jpeg');
+  const isPng = ext === 'png' || (item.cleanBlob && item.cleanBlob.type === 'image/png');
+
+  // Regra solicitada:
+  // Se for JPG: tenta salvar por cima do original.
+  // Se for PNG: NUNCA grava por cima; cria sempre um arquivo novo no mesmo local da galeria!
+  let targetFileName = item.fileName;
+  if (isPng) {
+    if (!targetFileName.startsWith('[LIMPA]_')) {
+      targetFileName = `[LIMPA]_${targetFileName}`;
+    }
+  } else {
+    targetFileName = getCleanFileName(item.fileName);
+  }
 
   if (window.AndroidBridge) {
     try {
       const base64 = await blobToBase64(item.cleanBlob);
 
-      // Se o usuário selecionou "Substituir (mesmo nome original)", tenta sobrescrever diretamente
-      if (mode === 'exact') {
+      // Apenas JPG tenta sobrescrever diretamente o arquivo original
+      if (isJpg && mode === 'exact') {
         let overwritten = false;
         if (item.realPath && window.AndroidBridge.overwritePhoto) {
           overwritten = window.AndroidBridge.overwritePhoto(item.realPath, base64);
@@ -645,16 +659,16 @@ async function saveOrOverwriteItem(item, index) {
           overwritten = window.AndroidBridge.overwritePhotoByUri(item.uri, base64);
         }
         if (overwritten) {
-          return { success: true, mode: 'overwritten', name: item.fileName };
+          return { success: true, mode: 'overwritten', name: item.fileName, isJpg: true };
         }
       }
 
-      // Se não for possível sobrescrever (devido à segurança de fotos de terceiros no Android) ou se escolheu prefixo:
-      // Salva de forma 100% garantida na Galeria no álbum "ZeroMeta" via MediaStore
+      // Se for PNG (ou JPG que não pôde ser sobrescrito):
+      // Salva como novo arquivo na Galeria NO MESMO LOCAL / PASTA da foto original!
       if (window.AndroidBridge.savePhotoToGallery) {
-        const saved = window.AndroidBridge.savePhotoToGallery(cleanName, base64);
+        const saved = window.AndroidBridge.savePhotoToGallery(targetFileName, base64, item.realPath || "");
         if (saved) {
-          return { success: true, mode: 'saved_gallery', name: cleanName };
+          return { success: true, mode: 'saved_gallery', name: targetFileName, isPng: isPng, isJpg: isJpg };
         }
       }
     } catch (e) {
@@ -666,12 +680,12 @@ async function saveOrOverwriteItem(item, index) {
   const url = URL.createObjectURL(item.cleanBlob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = cleanName;
+  a.download = targetFileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-  return { success: true, mode: 'downloaded', name: cleanName };
+  return { success: true, mode: 'downloaded', name: targetFileName, isPng: isPng };
 }
 
 // Batch Save All Photos
@@ -682,28 +696,48 @@ if (btnSaveAll) {
     btnSaveAll.disabled = true;
     btnSaveAll.innerHTML = `<span>⏳</span> Salvando ${processedResults.length} Foto(s)...`;
 
-    let overwrittenCount = 0;
+    let overwrittenJpgCount = 0;
+    let newPngCount = 0;
     let savedGalleryCount = 0;
     let downloadedCount = 0;
 
     for (let i = 0; i < processedResults.length; i++) {
       const res = await saveOrOverwriteItem(processedResults[i], i);
-      if (res.mode === 'overwritten') overwrittenCount++;
-      else if (res.mode === 'saved_gallery') savedGalleryCount++;
-      else downloadedCount++;
+      if (res.mode === 'overwritten') {
+        overwrittenJpgCount++;
+      } else if (res.mode === 'saved_gallery') {
+        if (res.isPng) newPngCount++;
+        else savedGalleryCount++;
+      } else {
+        downloadedCount++;
+      }
       await new Promise(r => setTimeout(r, 150));
     }
 
-    if (overwrittenCount > 0) {
+    if (overwrittenJpgCount > 0 && newPngCount > 0) {
+      const msg = `✅ ${overwrittenJpgCount} JPG(s) sobrescrito(s) e ${newPngCount} novo(s) PNG(s) salvo(s) na Galeria!`;
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
-        window.AndroidBridge.showToast(`✅ ${overwrittenCount} foto(s) sobrescrita(s) na Galeria!`);
+        window.AndroidBridge.showToast(msg);
       }
-      btnSaveAll.innerHTML = `<span>✅</span> ${overwrittenCount} Foto(s) Sobrescrita(s) na Galeria!`;
+      btnSaveAll.innerHTML = `<span>✅</span> Fotos Salvas na Galeria!`;
+    } else if (overwrittenJpgCount > 0) {
+      const msg = `✅ ${overwrittenJpgCount} JPG(s) original(is) sobrescrito(s) na Galeria!`;
+      if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
+        window.AndroidBridge.showToast(msg);
+      }
+      btnSaveAll.innerHTML = `<span>✅</span> ${overwrittenJpgCount} JPG(s) Sobrescrito(s)!`;
+    } else if (newPngCount > 0) {
+      const msg = `✅ ${newPngCount} novo(s) PNG(s) limpo(s) criado(s) no mesmo local da Galeria!`;
+      if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
+        window.AndroidBridge.showToast(msg);
+      }
+      btnSaveAll.innerHTML = `<span>✅</span> ${newPngCount} Novo(s) PNG(s) Salvo(s)!`;
     } else if (savedGalleryCount > 0) {
+      const msg = `✅ ${savedGalleryCount} foto(s) limpa(s) salva(s) na Galeria!`;
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
-        window.AndroidBridge.showToast(`✅ ${savedGalleryCount} foto(s) limpa(s) salva(s) no álbum "ZeroMeta" da Galeria!`);
+        window.AndroidBridge.showToast(msg);
       }
-      btnSaveAll.innerHTML = `<span>✅</span> ${savedGalleryCount} Foto(s) Salva(s) no Álbum ZeroMeta!`;
+      btnSaveAll.innerHTML = `<span>✅</span> ${savedGalleryCount} Foto(s) Salva(s)!`;
     } else {
       btnSaveAll.innerHTML = `<span>✅</span> ${processedResults.length} Foto(s) Salva(s) com Sucesso!`;
     }
@@ -758,9 +792,11 @@ window.downloadSingle = async function(index) {
   const res = await saveOrOverwriteItem(item, index);
   if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
     if (res.mode === 'overwritten') {
-      window.AndroidBridge.showToast("✅ Foto original sobrescrita na Galeria!");
+      window.AndroidBridge.showToast("✅ JPG original sobrescrito na Galeria!");
+    } else if (res.isPng) {
+      window.AndroidBridge.showToast("✅ Novo PNG limpo salvo no mesmo local da Galeria!");
     } else if (res.mode === 'saved_gallery') {
-      window.AndroidBridge.showToast("✅ Foto limpa salva no álbum \"ZeroMeta\" da Galeria!");
+      window.AndroidBridge.showToast("✅ Foto salva na Galeria!");
     }
   }
 };

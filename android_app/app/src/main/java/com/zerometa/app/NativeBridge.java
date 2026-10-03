@@ -117,6 +117,11 @@ public class NativeBridge {
 
     @JavascriptInterface
     public boolean savePhotoToGallery(String fileName, String base64CleanData) {
+        return savePhotoToGallery(fileName, base64CleanData, null);
+    }
+
+    @JavascriptInterface
+    public boolean savePhotoToGallery(String fileName, String base64CleanData, String originalPath) {
         try {
             byte[] cleanBytes = Base64.decode(base64CleanData, Base64.DEFAULT);
             ContentResolver resolver = activity.getContentResolver();
@@ -132,11 +137,33 @@ public class NativeBridge {
             }
             values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
 
+            // Determine target directory (same folder as original if known, otherwise Pictures/ZeroMeta)
+            String relativeDir = Environment.DIRECTORY_PICTURES + "/ZeroMeta";
+            if (originalPath != null && !originalPath.trim().isEmpty()) {
+                try {
+                    File origFile = new File(originalPath);
+                    File parent = origFile.getParentFile();
+                    if (parent != null) {
+                        String parentPath = parent.getAbsolutePath();
+                        String storageRoot = Environment.getExternalStorageDirectory().getAbsolutePath();
+                        if (parentPath.startsWith(storageRoot)) {
+                            String sub = parentPath.substring(storageRoot.length());
+                            if (sub.startsWith("/") || sub.startsWith("\\")) {
+                                sub = sub.substring(1);
+                            }
+                            if (!sub.isEmpty()) {
+                                relativeDir = sub.replace('\\', '/');
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ZeroMeta");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, relativeDir);
                 values.put(MediaStore.Images.Media.IS_PENDING, 1);
             } else {
-                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ZeroMeta");
+                File dir = new File(Environment.getExternalStorageDirectory(), relativeDir);
                 if (!dir.exists()) dir.mkdirs();
                 File dest = new File(dir, fileName);
                 values.put(MediaStore.Images.Media.DATA, dest.getAbsolutePath());
