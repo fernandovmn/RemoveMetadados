@@ -91,8 +91,12 @@ def main():
     print("=" * 60)
 
     if is_file:
-        dst = target if args.overwrite else (args.output or target.replace(".", "_limpo."))
-        if args.overwrite and not args.no_backup:
+        src_ext = os.path.splitext(target)[1].lower()
+        if src_ext == ".png":
+            dst = os.path.splitext(target)[0] + ".jpg" if args.overwrite else (args.output or os.path.splitext(target)[0] + "_limpo.jpg")
+        else:
+            dst = target if args.overwrite else (args.output or target.replace(".", "_limpo."))
+        if args.overwrite and not args.no_backup and src_ext != ".png":
             import shutil
             bak = target + ".bak"
             shutil.copy2(target, bak)

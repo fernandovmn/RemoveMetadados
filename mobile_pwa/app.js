@@ -241,8 +241,8 @@ function stripPngLossless(arrayBuffer) {
   return new Blob(outputParts, { type: 'image/png' });
 }
 
-// Canvas Fallback
-async function cleanWithCanvas(file, format = 'image/jpeg', quality = 0.95) {
+// Canvas High Quality Cleaner & Converter
+async function cleanWithCanvas(file, format = 'image/jpeg', quality = 0.98) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -254,6 +254,9 @@ async function cleanWithCanvas(file, format = 'image/jpeg', quality = 0.95) {
       canvas.height = img.naturalHeight || img.height;
 
       const ctx = canvas.getContext('2d');
+      // Preenche com fundo branco caso o PNG contenha transparência
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
 
       canvas.toBlob((blob) => {
@@ -275,29 +278,29 @@ async function cleanWithCanvas(file, format = 'image/jpeg', quality = 0.95) {
 async function cleanImage(file) {
   const originalSize = file.size;
   const ext = file.name.split('.').pop().toLowerCase();
+  const isPng = ext === 'png' || (file.type && file.type === 'image/png');
   const infoBefore = await inspectMetadata(file);
 
   let cleanBlob = null;
   let method = 'lossless';
+  let targetFileName = file.name;
 
-  try {
-    const buffer = await file.arrayBuffer();
-
-    if (['jpg', 'jpeg', 'jfif'].includes(ext) || file.type === 'image/jpeg') {
+  if (isPng) {
+    // Regra: PNG é sempre convertido para JPG limpo com qualidade máxima (0.98), sem metadados
+    cleanBlob = await cleanWithCanvas(file, 'image/jpeg', 0.98);
+    method = 'png_to_jpeg_quality_98';
+    const baseName = file.name.replace(/\.png$/i, '');
+    targetFileName = `${baseName}.jpg`;
+  } else {
+    try {
+      const buffer = await file.arrayBuffer();
       cleanBlob = stripJpegLossless(buffer);
       method = 'lossless_jpeg';
-    } else if (ext === 'png' || file.type === 'image/png') {
-      cleanBlob = stripPngLossless(buffer);
-      method = 'lossless_png';
+    } catch (err) {
+      console.warn("Lossless falhou, fallback para canvas:", err);
+      cleanBlob = await cleanWithCanvas(file, 'image/jpeg', 0.98);
+      method = 'canvas_reconstruction';
     }
-  } catch (err) {
-    console.warn("Lossless falhou, fallback para canvas:", err);
-  }
-
-  if (!cleanBlob) {
-    const targetType = (ext === 'png' || file.type === 'image/png') ? 'image/png' : 'image/jpeg';
-    cleanBlob = await cleanWithCanvas(file, targetType, 0.96);
-    method = 'canvas_reconstruction';
   }
 
   const newSize = cleanBlob.size;
@@ -305,11 +308,13 @@ async function cleanImage(file) {
 
   return {
     cleanBlob,
-    fileName: file.name,
+    fileName: targetFileName,
+    originalName: file.name,
     originalSize,
     newSize,
     bytesSaved,
     method,
+    isPng,
     infoBefore,
     realPath: file.realPath || null,
     uri: file.uri || null,
@@ -629,16 +634,15 @@ async function blobToBase64(blob) {
 
 async function saveOrOverwriteItem(item, index) {
   const mode = document.querySelector('input[name="naming-mode"]:checked')?.value || 'exact';
-  const ext = (item.fileName || '').split('.').pop().toLowerCase();
-  const isJpg = ['jpg', 'jpeg', 'jfif'].includes(ext) || (item.cleanBlob && item.cleanBlob.type === 'image/jpeg');
-  const isPng = ext === 'png' || (item.cleanBlob && item.cleanBlob.type === 'image/png');
+  const isOriginalPng = !!item.isPng;
+  const isJpg = !isOriginalPng;
 
   // Regra solicitada:
-  // Se for JPG: tenta salvar por cima do original.
-  // Se for PNG: NUNCA grava por cima; cria sempre um arquivo novo no mesmo local da galeria!
-  let targetFileName = item.fileName;
-  if (isPng) {
-    if (!targetFileName.startsWith('[LIMPA]_')) {
+  // Se for JPG: tenta salvar por cima do original (se mode === 'exact').
+  // Se for PNG: NUNCA grava por cima; cria sempre um arquivo novo JPG no mesmo local da galeria!
+  let targetFileName = item.fileName; // Já tem extensão .jpg
+  if (isOriginalPng) {
+    if (mode === 'prefix' && !targetFileName.startsWith('[LIMPA]_')) {
       targetFileName = `[LIMPA]_${targetFileName}`;
     }
   } else {
@@ -664,11 +668,11 @@ async function saveOrOverwriteItem(item, index) {
       }
 
       // Se for PNG (ou JPG que não pôde ser sobrescrito):
-      // Salva como novo arquivo na Galeria NO MESMO LOCAL / PASTA da foto original!
+      // Salva como novo arquivo JPG na Galeria NO MESMO LOCAL / PASTA da foto original!
       if (window.AndroidBridge.savePhotoToGallery) {
         const saved = window.AndroidBridge.savePhotoToGallery(targetFileName, base64, item.realPath || "");
         if (saved) {
-          return { success: true, mode: 'saved_gallery', name: targetFileName, isPng: isPng, isJpg: isJpg };
+          return { success: true, mode: 'saved_gallery', name: targetFileName, isPng: isOriginalPng, isJpg: isJpg };
         }
       }
     } catch (e) {
@@ -685,7 +689,7 @@ async function saveOrOverwriteItem(item, index) {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-  return { success: true, mode: 'downloaded', name: targetFileName, isPng: isPng };
+  return { success: true, mode: 'downloaded', name: targetFileName, isPng: isOriginalPng };
 }
 
 // Batch Save All Photos
@@ -715,7 +719,7 @@ if (btnSaveAll) {
     }
 
     if (overwrittenJpgCount > 0 && newPngCount > 0) {
-      const msg = `✅ ${overwrittenJpgCount} JPG(s) sobrescrito(s) e ${newPngCount} novo(s) PNG(s) salvo(s) na Galeria!`;
+      const msg = `✅ ${overwrittenJpgCount} JPG(s) sobrescrito(s) e ${newPngCount} novo(s) JPG(s) salvo(s) na Galeria!`;
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
         window.AndroidBridge.showToast(msg);
       }
@@ -727,11 +731,11 @@ if (btnSaveAll) {
       }
       btnSaveAll.innerHTML = `<span>✅</span> ${overwrittenJpgCount} JPG(s) Sobrescrito(s)!`;
     } else if (newPngCount > 0) {
-      const msg = `✅ ${newPngCount} novo(s) PNG(s) limpo(s) criado(s) no mesmo local da Galeria!`;
+      const msg = `✅ ${newPngCount} novo(s) JPG(s) limpo(s) salvo(s) no mesmo local da Galeria!`;
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
         window.AndroidBridge.showToast(msg);
       }
-      btnSaveAll.innerHTML = `<span>✅</span> ${newPngCount} Novo(s) PNG(s) Salvo(s)!`;
+      btnSaveAll.innerHTML = `<span>✅</span> ${newPngCount} Novo(s) JPG(s) Salvo(s)!`;
     } else if (savedGalleryCount > 0) {
       const msg = `✅ ${savedGalleryCount} foto(s) limpa(s) salva(s) na Galeria!`;
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
@@ -794,7 +798,7 @@ window.downloadSingle = async function(index) {
     if (res.mode === 'overwritten') {
       window.AndroidBridge.showToast("✅ JPG original sobrescrito na Galeria!");
     } else if (res.isPng) {
-      window.AndroidBridge.showToast("✅ Novo PNG limpo salvo no mesmo local da Galeria!");
+      window.AndroidBridge.showToast("✅ Novo JPG limpo salvo no mesmo local da Galeria!");
     } else if (res.mode === 'saved_gallery') {
       window.AndroidBridge.showToast("✅ Foto salva na Galeria!");
     }

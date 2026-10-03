@@ -714,7 +714,21 @@ class MainWindow(ctk.CTk):
                 break
 
             # Calculate destination path
-            if is_overwrite:
+            src_ext = os.path.splitext(src_file)[1].lower()
+            is_png = src_ext == ".png"
+
+            if is_png:
+                # Regra: se for PNG, NÃO grava por cima; cria um novo JPG no mesmo local!
+                if is_overwrite:
+                    base_name = os.path.splitext(src_file)[0]
+                    dst_file = base_name + ".jpg"
+                else:
+                    rel_path = os.path.relpath(src_file, input_dir)
+                    rel_base = os.path.splitext(rel_path)[0]
+                    dst_file = os.path.join(output_dir, rel_base + ".jpg")
+                    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+            elif is_overwrite:
+                # Se for JPG: grava por cima do arquivo original
                 dst_file = src_file
                 if make_backup:
                     bak_path = src_file + ".bak"

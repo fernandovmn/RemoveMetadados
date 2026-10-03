@@ -108,6 +108,36 @@ class TestMetadataCleaner(unittest.TestCase):
         self.assertEqual(stats["success_count"], 3)
         self.assertEqual(stats["error_count"], 0)
 
+    def test_png_to_jpg_conversion_and_overwrite(self):
+        """Test that PNG is converted to JPG without overwriting original, while JPG is overwritten."""
+        # 1. Test PNG in directory processing with overwrite=True
+        png_path = os.path.join(self.test_dir, "graphic.png")
+        im_png = Image.new("RGBA", (40, 40), color=(255, 0, 0, 128))
+        im_png.save(png_path)
+
+        jpg_path = os.path.join(self.test_dir, "photo.jpg")
+        im_jpg = Image.new("RGB", (40, 40), color=(0, 255, 0))
+        im_jpg.save(jpg_path)
+
+        stats = process_directory(
+            input_dir=self.test_dir,
+            overwrite=True,
+            make_backup=False,
+            recursive=False
+        )
+
+        # PNG original must still exist
+        self.assertTrue(os.path.exists(png_path))
+        # New JPG created from PNG must exist
+        expected_jpg = os.path.join(self.test_dir, "graphic.jpg")
+        self.assertTrue(os.path.exists(expected_jpg))
+        # Photo JPG must still exist (overwritten)
+        self.assertTrue(os.path.exists(jpg_path))
+
+        with Image.open(expected_jpg) as check:
+            self.assertEqual(check.format, "JPEG")
+            self.assertEqual(check.size, (40, 40))
+
 
 if __name__ == "__main__":
     unittest.main()

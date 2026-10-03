@@ -188,28 +188,35 @@ def clean_by_pixel_reconstruction(src_path: str, dst_path: str, fmt: str):
     canvas without any attached metadata or EXIF structures.
     """
     with Image.open(src_path) as img:
-        # Create fresh canvas
-        mode = img.mode
-        # Normalize modes for compatibility
-        if mode in ("RGBA", "LA") or (mode == "P" and "transparency" in img.info):
-            canvas_mode = "RGBA"
-        elif mode in ("RGB", "L"):
-            canvas_mode = mode
+        fmt_upper = fmt.upper()
+        # Handle transparency when saving to JPEG (composite against pure white)
+        if fmt_upper in ("JPEG", "JPG") and (img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            background.paste(img, mask=img.split()[3])
+            clean_img = background
         else:
-            canvas_mode = "RGB"
+            mode = img.mode
+            if mode in ("RGBA", "LA") or (mode == "P" and "transparency" in img.info):
+                canvas_mode = "RGBA"
+            elif mode in ("RGB", "L"):
+                canvas_mode = mode
+            else:
+                canvas_mode = "RGB"
 
-        clean_img = Image.new(canvas_mode, img.size)
-        clean_img.paste(img)
+            clean_img = Image.new(canvas_mode, img.size)
+            clean_img.paste(img)
 
         # Clear any dictionary
         clean_img.info.clear()
 
         # Save cleanly
         save_kwargs = {}
-        fmt_upper = fmt.upper()
         if fmt_upper in ("JPEG", "JPG"):
-            save_kwargs["quality"] = 95
+            save_kwargs["quality"] = 98
             save_kwargs["subsampling"] = 0
+            save_kwargs["optimize"] = True
         elif fmt_upper == "PNG":
             save_kwargs["optimize"] = True
         elif fmt_upper == "WEBP":
@@ -239,13 +246,30 @@ def clean_single_image(
     # First inspect original
     info_before = inspect_image_metadata(src_path)
     ext = os.path.splitext(src_path)[1].lower()
+    dst_ext = os.path.splitext(dst_path)[1].lower()
     original_size = info_before["file_size"]
 
     temp_dst = dst_path + ".tmp_clean"
     used_method = "lossless"
 
     try:
-        if mode == "smart_lossless":
+        # Special rule: PNG converting to JPG (desktop / mobile parity)
+        if ext == ".png" and dst_ext in (".jpg", ".jpeg"):
+            with Image.open(src_path) as img:
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    if img.mode != "RGBA":
+                        img = img.convert("RGBA")
+                    background.paste(img, mask=img.split()[3])
+                    rgb_img = background
+                else:
+                    rgb_img = img.convert("RGB")
+
+                rgb_img.info.clear()
+                rgb_img.save(temp_dst, format="JPEG", quality=98, subsampling=0, optimize=True)
+            used_method = "png_to_jpeg_quality_98"
+
+        elif mode == "smart_lossless":
             with open(src_path, "rb") as f:
                 raw_bytes = f.read()
 
@@ -416,7 +440,22 @@ def process_directory(
             break
 
         # Calculate destination path
-        if overwrite:
+        src_ext = os.path.splitext(src_file)[1].lower()
+        is_png = src_ext == ".png"
+
+        if is_png:
+            # PNG nunca grava por cima; cria um novo JPG no mesmo diretorio
+            if overwrite:
+                base_name = os.path.splitext(src_file)[0]
+                dst_file = base_name + ".jpg"
+            else:
+                rel_path = os.path.relpath(src_file, input_dir)
+                rel_base = os.path.splitext(rel_path)[0]
+                dst_file = os.path.join(output_dir, rel_base + ".jpg")
+                dst_folder = os.path.dirname(dst_file)
+                if not os.path.exists(dst_folder):
+                    os.makedirs(dst_folder, exist_ok=True)
+        elif overwrite:
             dst_file = src_file
             if make_backup:
                 bak_path = src_file + ".bak"
