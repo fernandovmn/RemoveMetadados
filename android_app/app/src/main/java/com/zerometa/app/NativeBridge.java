@@ -1,12 +1,15 @@
 package com.zerometa.app;
 
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
@@ -19,6 +22,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 
 public class NativeBridge {
     private final Activity activity;
@@ -83,9 +87,15 @@ public class NativeBridge {
 
     @JavascriptInterface
     public boolean overwritePhoto(String filePath, String base64CleanData) {
+        if (filePath == null || filePath.trim().isEmpty()) {
+            return false;
+        }
         try {
             byte[] cleanBytes = Base64.decode(base64CleanData, Base64.DEFAULT);
             File targetFile = new File(filePath);
+            if (!targetFile.exists() || !targetFile.canWrite()) {
+                return false;
+            }
 
             // Write clean bytes directly over original file
             FileOutputStream fos = new FileOutputStream(targetFile, false);
@@ -103,6 +113,58 @@ public class NativeBridge {
             e.printStackTrace();
             return false;
         }
+    }
+
+    @JavascriptInterface
+    public boolean savePhotoToGallery(String fileName, String base64CleanData) {
+        try {
+            byte[] cleanBytes = Base64.decode(base64CleanData, Base64.DEFAULT);
+            ContentResolver resolver = activity.getContentResolver();
+
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+            String mimeType = "image/jpeg";
+            String lower = fileName.toLowerCase();
+            if (lower.endsWith(".png")) {
+                mimeType = "image/png";
+            } else if (lower.endsWith(".webp")) {
+                mimeType = "image/webp";
+            }
+            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ZeroMeta");
+                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ZeroMeta");
+                if (!dir.exists()) dir.mkdirs();
+                File dest = new File(dir, fileName);
+                values.put(MediaStore.Images.Media.DATA, dest.getAbsolutePath());
+            }
+
+            Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri != null) {
+                OutputStream os = resolver.openOutputStream(uri);
+                if (os != null) {
+                    os.write(cleanBytes);
+                    os.flush();
+                    os.close();
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear();
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                    resolver.update(uri, values, null, null);
+                } else {
+                    MediaScannerConnection.scanFile(activity, new String[]{values.getAsString(MediaStore.Images.Media.DATA)}, null, null);
+                }
+
+                return true;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
     }
 
     @JavascriptInterface

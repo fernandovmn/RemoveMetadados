@@ -218,7 +218,7 @@ public class MainActivity extends Activity {
                 else name += ".jpg";
             }
 
-            String realPath = getRealPathFromUri(uri, name);
+            String realPath = getRealPathFromUri(uri, name, size);
 
             obj.put("name", name);
             obj.put("size", size);
@@ -232,8 +232,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String getRealPathFromUri(Uri uri, String displayName) {
-        // Try direct file path query
+    private String getRealPathFromUri(Uri uri, String displayName, long size) {
+        // 1. Try querying MediaStore by uri first
         try {
             String[] proj = {MediaStore.Images.Media.DATA};
             Cursor cursor = getContentResolver().query(uri, proj, null, null, null);
@@ -250,15 +250,49 @@ public class MainActivity extends Activity {
             }
         } catch (Exception ignored) {}
 
-        // Fallback: Check Pictures / DCIM directly on storage
+        // 2. Query MediaStore by DISPLAY_NAME (essential for Android PhotoPicker URIs)
         try {
-            File picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-            File candidate = new File(picturesDir, displayName);
-            if (candidate.exists()) return candidate.getAbsolutePath();
+            String[] proj = {MediaStore.Images.Media.DATA};
+            Cursor cursor = getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                proj,
+                MediaStore.Images.Media.DISPLAY_NAME + "=?",
+                new String[]{displayName},
+                MediaStore.Images.Media.DATE_MODIFIED + " DESC"
+            );
+            if (cursor != null) {
+                int dataIdx = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
+                while (cursor.moveToNext()) {
+                    if (dataIdx != -1) {
+                        String path = cursor.getString(dataIdx);
+                        if (path != null && new File(path).exists()) {
+                            cursor.close();
+                            return path;
+                        }
+                    }
+                }
+                cursor.close();
+            }
+        } catch (Exception ignored) {}
 
-            File dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM);
-            File candidateCamera = new File(new File(dcimDir, "Camera"), displayName);
-            if (candidateCamera.exists()) return candidateCamera.getAbsolutePath();
+        // 3. Fallback: Search common storage directories directly
+        try {
+            File[] searchDirs = {
+                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera"),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Screenshots"),
+                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ZeroMeta"),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            };
+            for (File dir : searchDirs) {
+                if (dir != null && dir.exists()) {
+                    File candidate = new File(dir, displayName);
+                    if (candidate.exists()) {
+                        return candidate.getAbsolutePath();
+                    }
+                }
+            }
         } catch (Exception ignored) {}
 
         return null;

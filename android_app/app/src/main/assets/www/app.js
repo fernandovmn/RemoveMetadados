@@ -628,26 +628,41 @@ async function blobToBase64(blob) {
 }
 
 async function saveOrOverwriteItem(item, index) {
+  const mode = document.querySelector('input[name="naming-mode"]:checked')?.value || 'exact';
+  const cleanName = getCleanFileName(item.fileName);
+
   if (window.AndroidBridge) {
     try {
       const base64 = await blobToBase64(item.cleanBlob);
-      let success = false;
-      if (item.uri && window.AndroidBridge.overwritePhotoByUri) {
-        success = window.AndroidBridge.overwritePhotoByUri(item.uri, base64);
+
+      // Se o usuário selecionou "Substituir (mesmo nome original)", tenta sobrescrever diretamente
+      if (mode === 'exact') {
+        let overwritten = false;
+        if (item.realPath && window.AndroidBridge.overwritePhoto) {
+          overwritten = window.AndroidBridge.overwritePhoto(item.realPath, base64);
+        }
+        if (!overwritten && item.uri && window.AndroidBridge.overwritePhotoByUri) {
+          overwritten = window.AndroidBridge.overwritePhotoByUri(item.uri, base64);
+        }
+        if (overwritten) {
+          return { success: true, mode: 'overwritten', name: item.fileName };
+        }
       }
-      if (!success && item.realPath && window.AndroidBridge.overwritePhoto) {
-        success = window.AndroidBridge.overwritePhoto(item.realPath, base64);
-      }
-      if (success) {
-        return { success: true, mode: 'overwritten' };
+
+      // Se não for possível sobrescrever (devido à segurança de fotos de terceiros no Android) ou se escolheu prefixo:
+      // Salva de forma 100% garantida na Galeria no álbum "ZeroMeta" via MediaStore
+      if (window.AndroidBridge.savePhotoToGallery) {
+        const saved = window.AndroidBridge.savePhotoToGallery(cleanName, base64);
+        if (saved) {
+          return { success: true, mode: 'saved_gallery', name: cleanName };
+        }
       }
     } catch (e) {
-      console.warn("Falha ao sobrescrever no storage nativo:", e);
+      console.warn("Falha ao salvar no storage nativo:", e);
     }
   }
 
-  // Fallback to web browser download
-  const cleanName = getCleanFileName(item.fileName);
+  // Fallback para navegador web (PWA / desktop)
   const url = URL.createObjectURL(item.cleanBlob);
   const a = document.createElement('a');
   a.href = url;
@@ -656,7 +671,7 @@ async function saveOrOverwriteItem(item, index) {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-  return { success: true, mode: 'downloaded' };
+  return { success: true, mode: 'downloaded', name: cleanName };
 }
 
 // Batch Save All Photos
@@ -665,25 +680,32 @@ if (btnSaveAll) {
     if (!processedResults.length) return;
 
     btnSaveAll.disabled = true;
-    btnSaveAll.innerHTML = `<span>⏳</span> Salvando ${processedResults.length} Fotos...`;
+    btnSaveAll.innerHTML = `<span>⏳</span> Salvando ${processedResults.length} Foto(s)...`;
 
     let overwrittenCount = 0;
+    let savedGalleryCount = 0;
     let downloadedCount = 0;
 
     for (let i = 0; i < processedResults.length; i++) {
       const res = await saveOrOverwriteItem(processedResults[i], i);
       if (res.mode === 'overwritten') overwrittenCount++;
+      else if (res.mode === 'saved_gallery') savedGalleryCount++;
       else downloadedCount++;
       await new Promise(r => setTimeout(r, 150));
     }
 
     if (overwrittenCount > 0) {
       if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
-        window.AndroidBridge.showToast(`✅ ${overwrittenCount} fotos sobrescritas diretamente na galeria!`);
+        window.AndroidBridge.showToast(`✅ ${overwrittenCount} foto(s) sobrescrita(s) na Galeria!`);
       }
-      btnSaveAll.innerHTML = `<span>✅</span> ${overwrittenCount} Fotos Sobrescritas na Galeria!`;
+      btnSaveAll.innerHTML = `<span>✅</span> ${overwrittenCount} Foto(s) Sobrescrita(s) na Galeria!`;
+    } else if (savedGalleryCount > 0) {
+      if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
+        window.AndroidBridge.showToast(`✅ ${savedGalleryCount} foto(s) limpa(s) salva(s) no álbum "ZeroMeta" da Galeria!`);
+      }
+      btnSaveAll.innerHTML = `<span>✅</span> ${savedGalleryCount} Foto(s) Salva(s) no Álbum ZeroMeta!`;
     } else {
-      btnSaveAll.innerHTML = `<span>✅</span> ${processedResults.length} Fotos Salvas com Sucesso!`;
+      btnSaveAll.innerHTML = `<span>✅</span> ${processedResults.length} Foto(s) Salva(s) com Sucesso!`;
     }
 
     setTimeout(() => {
@@ -734,8 +756,12 @@ window.downloadSingle = async function(index) {
   if (!item) return;
 
   const res = await saveOrOverwriteItem(item, index);
-  if (res.mode === 'overwritten' && window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
-    window.AndroidBridge.showToast("✅ Foto original sobrescrita na pasta Pictures!");
+  if (window.AndroidBridge && typeof window.AndroidBridge.showToast === 'function') {
+    if (res.mode === 'overwritten') {
+      window.AndroidBridge.showToast("✅ Foto original sobrescrita na Galeria!");
+    } else if (res.mode === 'saved_gallery') {
+      window.AndroidBridge.showToast("✅ Foto limpa salva no álbum \"ZeroMeta\" da Galeria!");
+    }
   }
 };
 
