@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
@@ -182,43 +183,125 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
 
             JSONObject obj = new JSONObject();
-            String name = "foto.jpg";
+            String name = null;
             long size = 0;
 
-            Cursor cursor = getContentResolver().query(uri, null, null, null, null);
-            if (cursor != null) {
-                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (cursor.moveToFirst()) {
+            // 1. Tentar ler OpenableColumns primeiro
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
                     if (nameIndex != -1) {
-                        String fetchedName = cursor.getString(nameIndex);
-                        if (fetchedName != null && !fetchedName.trim().isEmpty()) {
-                            name = fetchedName;
+                        String fetched = cursor.getString(nameIndex);
+                        if (fetched != null && !fetched.trim().isEmpty()) {
+                            name = fetched.trim();
                         }
                     }
                     if (sizeIndex != -1) size = cursor.getLong(sizeIndex);
                 }
-                cursor.close();
-            }
+            } catch (Exception ignored) {}
 
+            // 2. Se size não veio do cursor, tentar AssetFileDescriptor
             if (size <= 0) {
-                try {
-                    AssetFileDescriptor pfd = getContentResolver().openAssetFileDescriptor(uri, "r");
-                    if (pfd != null) {
-                        size = pfd.getLength();
-                        pfd.close();
-                    }
+                try (AssetFileDescriptor pfd = getContentResolver().openAssetFileDescriptor(uri, "r")) {
+                    if (pfd != null) size = pfd.getLength();
                 } catch (Exception ignored) {}
             }
 
-            if (!name.contains(".")) {
-                String mime = getContentResolver().getType(uri);
-                if (mime != null && mime.contains("png")) name += ".png";
-                else if (mime != null && mime.contains("webp")) name += ".webp";
-                else name += ".jpg";
+            // 3. Extrair ID numérico do PhotoPicker se houver (ex: content://media/picker/.../386085)
+            long mediaId = -1;
+            String lastSegment = uri.getLastPathSegment();
+            if (lastSegment != null && lastSegment.matches("\\d+")) {
+                try {
+                    mediaId = Long.parseLong(lastSegment);
+                } catch (Exception ignored) {}
+            }
+            if (mediaId == -1 && name != null && name.matches("\\d+")) {
+                try {
+                    mediaId = Long.parseLong(name);
+                } catch (Exception ignored) {}
             }
 
-            String realPath = getRealPathFromUri(uri, name, size);
+            String realPath = null;
+
+            // 4. Se temos um ID numérico, buscar o nome real e caminho real no MediaStore
+            if (mediaId > 0) {
+                String[] proj = {
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.DATA,
+                    MediaStore.MediaColumns.SIZE
+                };
+
+                Uri[] queryUris = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    ? new Uri[]{
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        MediaStore.Files.getContentUri("external"),
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                    }
+                    : new Uri[]{
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        MediaStore.Files.getContentUri("external")
+                    };
+
+                for (Uri qUri : queryUris) {
+                    try (Cursor c = getContentResolver().query(
+                        qUri,
+                        proj,
+                        MediaStore.MediaColumns._ID + "=?",
+                        new String[]{String.valueOf(mediaId)},
+                        null
+                    )) {
+                        if (c != null && c.moveToFirst()) {
+                            int dIdx = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                            int pIdx = c.getColumnIndex(MediaStore.MediaColumns.DATA);
+                            int sIdx = c.getColumnIndex(MediaStore.MediaColumns.SIZE);
+
+                            if (dIdx != -1) {
+                                String disp = c.getString(dIdx);
+                                if (disp != null && disp.contains(".")) {
+                                    name = disp;
+                                }
+                            }
+                            if (pIdx != -1) {
+                                String path = c.getString(pIdx);
+                                if (path != null && new File(path).exists()) {
+                                    realPath = path;
+                                }
+                            }
+                            if (size <= 0 && sIdx != -1) {
+                                size = c.getLong(sIdx);
+                            }
+                            if (realPath != null) break;
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // 5. Se ainda não temos realPath ou nome com extensão real, tentar resolver por busca
+            if (realPath == null) {
+                realPath = getRealPathFromUri(uri, name, size);
+            }
+
+            if (realPath != null) {
+                File f = new File(realPath);
+                if (f.exists()) {
+                    if (name == null || !name.contains(".") || name.matches("\\d+")) {
+                        name = f.getName();
+                    }
+                    if (size <= 0) {
+                        size = f.length();
+                    }
+                }
+            }
+
+            // 6. Fallback de extensão se ainda não tiver ponto
+            if (name == null || !name.contains(".")) {
+                String mime = getContentResolver().getType(uri);
+                String ext = ".jpg";
+                if (mime != null && mime.contains("png")) ext = ".png";
+                else if (mime != null && mime.contains("webp")) ext = ".webp";
+                name = (name != null && !name.trim().isEmpty() ? name : "foto") + ext;
+            }
 
             obj.put("name", name);
             obj.put("size", size);
@@ -233,63 +316,118 @@ public class MainActivity extends Activity {
     }
 
     private String getRealPathFromUri(Uri uri, String displayName, long size) {
-        // 1. Try querying MediaStore by uri first
+        // 1. Tentar ler coluna DATA diretamente da URI
         try {
             String[] proj = {MediaStore.Images.Media.DATA};
-            Cursor cursor = getContentResolver().query(uri, proj, null, null, null);
-            if (cursor != null) {
-                int colIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
-                if (colIndex != -1 && cursor.moveToFirst()) {
-                    String path = cursor.getString(colIndex);
-                    cursor.close();
-                    if (path != null && new File(path).exists()) {
-                        return path;
-                    }
-                }
-                cursor.close();
-            }
-        } catch (Exception ignored) {}
-
-        // 2. Query MediaStore by DISPLAY_NAME (essential for Android PhotoPicker URIs)
-        try {
-            String[] proj = {MediaStore.Images.Media.DATA};
-            Cursor cursor = getContentResolver().query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                proj,
-                MediaStore.Images.Media.DISPLAY_NAME + "=?",
-                new String[]{displayName},
-                MediaStore.Images.Media.DATE_MODIFIED + " DESC"
-            );
-            if (cursor != null) {
-                int dataIdx = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
-                while (cursor.moveToNext()) {
-                    if (dataIdx != -1) {
-                        String path = cursor.getString(dataIdx);
+            try (Cursor cursor = getContentResolver().query(uri, proj, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int colIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
+                    if (colIndex != -1) {
+                        String path = cursor.getString(colIndex);
                         if (path != null && new File(path).exists()) {
-                            cursor.close();
                             return path;
                         }
                     }
                 }
-                cursor.close();
             }
         } catch (Exception ignored) {}
 
-        // 3. Fallback: Search common storage directories directly
+        // 2. Se temos displayName com extensão (ex: 1790945695631_092325.jpg), consultar MediaStore
+        if (displayName != null && displayName.contains(".")) {
+            try {
+                String[] proj = {MediaStore.MediaColumns.DATA};
+                Uri[] qUris = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    ? new Uri[]{MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Downloads.EXTERNAL_CONTENT_URI, MediaStore.Files.getContentUri("external")}
+                    : new Uri[]{MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Files.getContentUri("external")};
+
+                for (Uri qUri : qUris) {
+                    try (Cursor cursor = getContentResolver().query(
+                        qUri,
+                        proj,
+                        MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                        new String[]{displayName},
+                        MediaStore.MediaColumns.DATE_MODIFIED + " DESC"
+                    )) {
+                        if (cursor != null) {
+                            int dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                            while (cursor.moveToNext()) {
+                                if (dataIdx != -1) {
+                                    String path = cursor.getString(dataIdx);
+                                    if (path != null && new File(path).exists()) {
+                                        return path;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 3. Se temos o tamanho exato (size > 0), consultar MediaStore por SIZE
+        if (size > 0) {
+            try {
+                String[] proj = {MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME};
+                try (Cursor cursor = getContentResolver().query(
+                    MediaStore.Files.getContentUri("external"),
+                    proj,
+                    MediaStore.MediaColumns.SIZE + "=?",
+                    new String[]{String.valueOf(size)},
+                    MediaStore.MediaColumns.DATE_MODIFIED + " DESC"
+                )) {
+                    if (cursor != null) {
+                        int dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                        while (cursor.moveToNext()) {
+                            if (dataIdx != -1) {
+                                String path = cursor.getString(dataIdx);
+                                if (path != null && new File(path).exists()) {
+                                    return path;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 4. Varredura direta em diretórios comuns de armazenamento
         try {
             File[] searchDirs = {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera"),
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
                 new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Screenshots"),
-                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ZeroMeta"),
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                Environment.getExternalStorageDirectory()
             };
-            for (File dir : searchDirs) {
-                if (dir != null && dir.exists()) {
-                    File candidate = new File(dir, displayName);
-                    if (candidate.exists()) {
-                        return candidate.getAbsolutePath();
+
+            // Se temos displayName com extensão
+            if (displayName != null && displayName.contains(".")) {
+                for (File dir : searchDirs) {
+                    if (dir != null && dir.exists()) {
+                        File candidate = new File(dir, displayName);
+                        if (candidate.exists()) {
+                            return candidate.getAbsolutePath();
+                        }
+                    }
+                }
+            }
+
+            // Se temos size > 0, checar arquivos pelo tamanho exato nas pastas públicas
+            if (size > 0) {
+                for (File dir : searchDirs) {
+                    if (dir != null && dir.exists() && dir.isDirectory()) {
+                        File[] files = dir.listFiles();
+                        if (files != null) {
+                            for (File f : files) {
+                                if (f.isFile() && f.length() == size) {
+                                    String lower = f.getName().toLowerCase();
+                                    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) {
+                                        return f.getAbsolutePath();
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -2,9 +2,11 @@ package com.zerometa.app;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -93,26 +95,62 @@ public class NativeBridge {
         try {
             byte[] cleanBytes = Base64.decode(base64CleanData, Base64.DEFAULT);
             File targetFile = new File(filePath);
-            if (!targetFile.exists() || !targetFile.canWrite()) {
+            if (!targetFile.exists()) {
                 return false;
             }
 
-            // Write clean bytes directly over original file
-            FileOutputStream fos = new FileOutputStream(targetFile, false);
-            fos.write(cleanBytes);
-            fos.flush();
-            fos.close();
+            boolean written = false;
 
-            // Refresh Android MediaStore gallery thumbnail in-place
-            MediaScannerConnection.scanFile(activity, new String[]{targetFile.getAbsolutePath()}, null, (path, uri) -> {
-                // Scanned
-            });
+            // Tentativa 1: Escrita direta em File (funciona com MANAGE_EXTERNAL_STORAGE)
+            try {
+                FileOutputStream fos = new FileOutputStream(targetFile, false);
+                fos.write(cleanBytes);
+                fos.flush();
+                fos.close();
+                written = true;
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
 
-            return true;
+            // Tentativa 2: Se falhar escrita direta, tentar sobrescrever via MediaStore ContentResolver
+            if (!written) {
+                try {
+                    Uri contentUri = null;
+                    try (Cursor c = activity.getContentResolver().query(
+                        MediaStore.Files.getContentUri("external"),
+                        new String[]{MediaStore.MediaColumns._ID},
+                        MediaStore.MediaColumns.DATA + "=?",
+                        new String[]{filePath},
+                        null
+                    )) {
+                        if (c != null && c.moveToFirst()) {
+                            long id = c.getLong(0);
+                            contentUri = ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id);
+                        }
+                    }
+                    if (contentUri != null) {
+                        try (OutputStream os = activity.getContentResolver().openOutputStream(contentUri, "wt")) {
+                            if (os != null) {
+                                os.write(cleanBytes);
+                                os.flush();
+                                written = true;
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            if (written) {
+                // Refresh Android MediaStore gallery thumbnail in-place
+                MediaScannerConnection.scanFile(activity, new String[]{targetFile.getAbsolutePath()}, null, (path, uri) -> {});
+                return true;
+            }
         } catch (Exception e) {
             e.printStackTrace();
-            return false;
         }
+        return false;
     }
 
     @JavascriptInterface
@@ -124,10 +162,31 @@ public class NativeBridge {
     public boolean savePhotoToGallery(String fileName, String base64CleanData, String originalPath) {
         try {
             byte[] cleanBytes = Base64.decode(base64CleanData, Base64.DEFAULT);
-            ContentResolver resolver = activity.getContentResolver();
 
+            // 1. Prioridade máxima: Salvar diretamente na mesma pasta física da foto original
+            if (originalPath != null && !originalPath.trim().isEmpty()) {
+                try {
+                    File origFile = new File(originalPath);
+                    File parent = origFile.getParentFile();
+                    if (parent != null && parent.exists() && parent.isDirectory()) {
+                        File dest = new File(parent, fileName);
+                        FileOutputStream fos = new FileOutputStream(dest, false);
+                        fos.write(cleanBytes);
+                        fos.flush();
+                        fos.close();
+
+                        MediaScannerConnection.scanFile(activity, new String[]{dest.getAbsolutePath()}, null, null);
+                        return true;
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // 2. Fallback via MediaStore
+            ContentResolver resolver = activity.getContentResolver();
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
             String mimeType = "image/jpeg";
             String lower = fileName.toLowerCase();
             if (lower.endsWith(".png")) {
@@ -135,10 +194,10 @@ public class NativeBridge {
             } else if (lower.endsWith(".webp")) {
                 mimeType = "image/webp";
             }
-            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
 
-            // Determine target directory (same folder as original if known, otherwise Pictures/ZeroMeta)
-            String relativeDir = Environment.DIRECTORY_PICTURES + "/ZeroMeta";
+            // Determinar diretório relativo baseado no caminho original
+            String relativeDir = Environment.DIRECTORY_PICTURES;
             if (originalPath != null && !originalPath.trim().isEmpty()) {
                 try {
                     File origFile = new File(originalPath);
@@ -148,7 +207,7 @@ public class NativeBridge {
                         String storageRoot = Environment.getExternalStorageDirectory().getAbsolutePath();
                         if (parentPath.startsWith(storageRoot)) {
                             String sub = parentPath.substring(storageRoot.length());
-                            if (sub.startsWith("/") || sub.startsWith("\\")) {
+                            while (sub.startsWith("/") || sub.startsWith("\\")) {
                                 sub = sub.substring(1);
                             }
                             if (!sub.isEmpty()) {
@@ -159,17 +218,21 @@ public class NativeBridge {
                 } catch (Exception ignored) {}
             }
 
+            Uri baseUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, relativeDir);
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                if (relativeDir.equalsIgnoreCase("Download") || relativeDir.toLowerCase().startsWith("download/")) {
+                    baseUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                }
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativeDir);
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
             } else {
                 File dir = new File(Environment.getExternalStorageDirectory(), relativeDir);
                 if (!dir.exists()) dir.mkdirs();
                 File dest = new File(dir, fileName);
-                values.put(MediaStore.Images.Media.DATA, dest.getAbsolutePath());
+                values.put(MediaStore.MediaColumns.DATA, dest.getAbsolutePath());
             }
 
-            Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            Uri uri = resolver.insert(baseUri, values);
             if (uri != null) {
                 OutputStream os = resolver.openOutputStream(uri);
                 if (os != null) {
@@ -180,10 +243,10 @@ public class NativeBridge {
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     values.clear();
-                    values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
                     resolver.update(uri, values, null, null);
                 } else {
-                    MediaScannerConnection.scanFile(activity, new String[]{values.getAsString(MediaStore.Images.Media.DATA)}, null, null);
+                    MediaScannerConnection.scanFile(activity, new String[]{values.getAsString(MediaStore.MediaColumns.DATA)}, null, null);
                 }
 
                 return true;
